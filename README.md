@@ -32,19 +32,28 @@
 ```
 video/
 ├── main.py              # 程序入口和主应用类
-├── ui.py                # 用户界面和国际化
-├── core.py              # 视频处理核心逻辑
-├── scanner.py           # 视频扫描工作线程
-├── config.py            # 全局配置参数
-├── progress.py          # 进度管理功能
+├── config.py            # 全局配置参数（兼容层）
 ├── video_cache.py       # 视频缓存管理系统
+├── src/                 # 模块化业务代码
+│   ├── config.py        # 全局配置（实际实现）
+│   ├── core/            # 核心业务逻辑
+│   │   ├── state.py     # 扫描状态管理
+│   │   ├── video_processor.py  # 视频处理引擎
+│   │   ├── comparator.py       # 相似度比对算法
+│   │   └── scanner.py          # 扫描工作线程
+│   ├── ui/              # UI层
+│   │   ├── translations.py     # 国际化翻译
+│   │   ├── main_window.py      # 主窗口UI
+│   │   ├── settings_window.py  # 设置窗口
+│   │   └── language_manager.py # 语言管理
+│   └── utils/           # 工具模块
+│       ├── progress.py  # 进度管理
+│       └── video_cache/ # 缓存兼容层
 ├── tests/               # 测试脚本目录
-│   ├── test_high_precision.py
-│   ├── test_simple.py
-│   └── test_tk.py
 ├── docs/                # 文档目录
-│   ├── CACHE_README.md
-│   └── HIGH_PRECISION_README.md
+│   ├── ARCHITECTURE.md  # 架构说明
+│   ├── CHANGELOG.md     # 变更日志
+│   └── CONTRIBUTING.md  # 贡献指南
 └── video_cache_shards/  # 缓存分片存储（自动生成）
 ```
 

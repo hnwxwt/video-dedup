@@ -14,7 +14,7 @@ setup(
     description="智能视频去重工具 - Smart Video Deduplication Tool",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/your-username/video-dedup",
+    url="https://github.com/hnwxwt/video-dedup",
     packages=find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",

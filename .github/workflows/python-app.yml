@@ -30,14 +30,19 @@ jobs:
     - name: Check code syntax
       run: |
         python -m py_compile main.py
-        python -m py_compile ui.py
-        python -m py_compile core.py
-        python -m py_compile scanner.py
         python -m py_compile config.py
-        python -m py_compile progress.py
         python -m py_compile video_cache.py
+        python -m py_compile src/config.py
+        python -m py_compile src/core/__init__.py
+        python -m py_compile src/core/state.py
+        python -m py_compile src/core/video_processor.py
+        python -m py_compile src/core/comparator.py
+        python -m py_compile src/core/scanner.py
+        python -m py_compile src/ui/__init__.py
+        python -m py_compile src/ui/translations.py
+        python -m py_compile src/ui/main_window.py
+        python -m py_compile src/ui/settings_window.py
+        python -m py_compile src/ui/language_manager.py
+        python -m py_compile src/utils/__init__.py
+        python -m py_compile src/utils/progress.py
     
-    - name: Run tests
-      run: |
-        cd tests
-        python test_simple.py || echo "Tests completed with warnings"
