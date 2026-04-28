@@ -1,12 +1,31 @@
+"""
+扫描工作线程模块 - 负责后台视频扫描任务
+
+职责:
+- 多线程并发扫描
+- 缓存检查与加载
+- 进度更新回调
+- 暂停/停止状态管理
+"""
 import os
 import gc
+import time
 from tkinter import messagebox
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from core import process_video, process_video_safe, process_video_high_precision, ScanState
-from core import process_video_optimized, process_video_safe_optimized  # 导入优化版本
-from video_cache import get_cached_video, save_video_cache, flush_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+
+# ✅ 使用相对导入（在包内调用时有效）
+from .state import ScanState
+from .video_processor import process_video, process_video_safe, process_video_high_precision
+from .video_processor import process_video_optimized, process_video_safe_optimized
+from ..utils.video_cache import get_cached_video, save_video_cache, flush_cache
+
 
 def scan_worker(app):
+    """扫描工作线程
+    
+    Args:
+        app: 主应用对象，包含所有UI和状态引用
+    """
     try:
         left = app.video_list[app.finished_idx:]
         total = len(app.video_list)
@@ -40,7 +59,6 @@ def scan_worker(app):
                             if ScanState.STOP:
                                 app.log("\n[INFO] 暂停期间收到停止信号")
                                 break
-                            import time
                             time.sleep(0.1)  # 短暂休眠避免CPU占用
                         if ScanState.STOP:
                             break
@@ -67,13 +85,34 @@ def scan_worker(app):
                             futures[executor.submit(process_video_optimized, path, rot, res)] = path
 
                 for future in as_completed(futures):
+                    # ✅ 关键修复：每次迭代前检查停止状态
                     if ScanState.STOP:
+                        app.log("\n[INFO] 检测到停止信号，立即退出线程池")
+                        executor.shutdown(wait=False, cancel_futures=True)
                         return
+                    
+                    if ScanState.PAUSE:
+                        app.log("\n[INFO] 检测到暂停信号，等待继续...")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        return
+                    
+                    # ✅ 使用超时机制获取结果
+                    try:
+                        data = future.result(timeout=1.0)  # 增加到1秒，减少频繁超时
+                    except TimeoutError:
+                        continue  # 超时后继续检查状态
+                    except Exception as e:
+                        path = futures.get(future, "未知")
+                        name = os.path.basename(path) if path != "未知" else "未知"
+                        app.finished_idx += 1
+                        app.log(f"({app.finished_idx}/{total}) ❌ {name} (异常: {str(e)[:50]})")
+                        app.update_progress()
+                        continue
+                    
                     path = futures[future]
                     app.finished_idx += 1
                     name = os.path.basename(path)
                     try:
-                        data = future.result()
                         if data:
                             # 两个模式都返回4个值: (path, hash_list, frame_list, info)
                             app.video_data[data[0]] = (data[1], data[2], data[3])
@@ -88,7 +127,7 @@ def scan_worker(app):
                         # ✅ 无论是否命中缓存，都预加载下一个视频
                         next_idx = app.finished_idx
                         if next_idx < len(app.video_list):
-                            from video_cache import prefetch_next_video
+                            from src.utils.video_cache import prefetch_next_video
                             prefetch_next_video(app.video_list[next_idx], mode_high_precision)
                         
                         # 每处理50个视频，强制垃圾回收一次
@@ -97,12 +136,6 @@ def scan_worker(app):
                     except Exception as e:
                         app.log(f"({app.finished_idx}/{total}) ❌ {name} ({str(e)[:50]})")
                     app.update_progress()
-                    if ScanState.PAUSE:
-                        app.after(0, app.on_pause_done)
-                        return
-            
-            # 多线程扫描完成后，批量保存缓存到磁盘
-            flush_cache()
             
         else:
             for path in left:
@@ -114,7 +147,6 @@ def scan_worker(app):
                     if ScanState.STOP:
                         app.log("\n[INFO] 暂停期间收到停止信号")
                         return
-                    import time
                     time.sleep(0.1)  # 短暂休眠避免CPU占用
                 
                 name = os.path.basename(path)
@@ -146,9 +178,6 @@ def scan_worker(app):
                         app.log(f"({app.finished_idx}/{total}) ❌ {name}")
                 
                 app.update_progress()
-            
-            # 单线程扫描完成后，批量保存缓存到磁盘
-            flush_cache()
 
         if not ScanState.STOP:
             app.after(0, app.on_scan_done)
@@ -157,4 +186,6 @@ def scan_worker(app):
         app.log(f"❌ {error_msg}")
         # 在主线程中显示错误对话框
         app.after(0, lambda: messagebox.showerror("扫描错误", error_msg))
-        app.after(0, app.reset_buttons)
+        # ✅ 仅在非用户主动停止的情况下重置按钮
+        if not ScanState.STOP:
+            app.after(0, app.reset_buttons)

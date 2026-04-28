@@ -1,34 +1,32 @@
 """
-全局配置模块 - 向后兼容层
+全局配置模块 - 定义所有常量配置
 
-注意: 此文件仅为兼容性保留，实际实现已迁移到 src/config.py
-新代码应直接从 src.config 导入
+职责:
+- 视频格式支持
+- 线程数配置
+- 哈希阈值范围
+- 高精度模式参数
+- 用户提示信息
 """
-import sys
-import os
 
-# 将 src 目录添加到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-
-# 从新模块导入所有内容
-from src.config import *
-
+# ========== 基础配置 ==========
 VIDEO_FORMATS = (".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".mpg", ".mpeg")
 CAPTURE_POSITIONS = [0.2, 0.5, 0.8]
 
 DEFAULT_THUMB_W = 220
 DEFAULT_THUMB_H = 280
 
+# ========== 线程配置 ==========
 MIN_THREAD = 4
 MAX_THREAD = 20
 DEFAULT_THREAD = 8
 
-# 精确模式阈值
+# ========== 精确模式配置 ==========
 MIN_HASH_LIMIT = 5
 MAX_HASH_LIMIT = 15
 DEFAULT_HASH_LIMIT = 8
 
-# 抗水印模式阈值
+# ========== 抗水印模式配置 ==========
 MIN_HASH_LIMIT_SAFE = 12
 MAX_HASH_LIMIT_SAFE = 24
 DEFAULT_HASH_LIMIT_SAFE = 16
@@ -37,9 +35,10 @@ CUT_RATIO = 0.15  # 中心裁剪比例
 STANDARD_W = 360
 STANDARD_H = 640
 
+# ========== 进度保存 ==========
 SAVE_PROGRESS_PATH = "scan_progress.json"
 
-# 高精度模式配置
+# ========== 高精度模式配置 ==========
 HIGH_PRECISION_SAMPLE_COUNT = 10  # 采样帧数量
 HIGH_PRECISION_SSIM_THRESHOLD = 0.95  # SSIM 相似度阈值
 HIGH_PRECISION_WEIGHT_PHASH = 0.3  # pHash 权重
@@ -52,21 +51,19 @@ HIGH_PRECISION_WEIGHT_SSIM = 0.15  # SSIM 权重
 HIGH_PRECISION_MAX_THREADS = 4  # 最大线程数
 HIGH_PRECISION_DEFAULT_THREADS = 2  # 默认线程数
 
-# CPU选择
+# ========== 用户提示信息 ==========
 CPU_THREAD_HINT = """【线程数选择参考 · 根据自己CPU选择】
 1. 双核/老旧低压CPU： 2～3 线程（最稳不卡顿）
 2. 四核4线程（i3-8100等）： 4～6 线程（均衡稳定）
 3. 六核/八核主流CPU： 8～12 线程（日常全速）
 4. 十核及以上高性能CPU：12～16 线程（极速扫描）"""
 
-# 哈希阈值提示 - 精确模式
 HASH_LIMIT_HINT = """【哈希相似度阈值推荐-精确模式】
 严格精准防误判：5～7
 日常通用平衡：8（默认）
 适度放宽提召回：9～11
 宽松模式查更多：12～15"""
 
-# 哈希阈值提示 - 抗水印模式
 HASH_LIMIT_SAFE_HINT = """【哈希相似度阈值推荐-抗水印模式】
 严格精准防误判：12～14
 日常通用平衡：16（默认）

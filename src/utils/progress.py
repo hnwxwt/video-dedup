@@ -1,15 +1,25 @@
+"""
+进度管理模块 - 负责扫描进度的保存和加载
+"""
 import json
 import os
-import imagehash
-from PIL import Image
+import base64
+from io import BytesIO
 from config import SAVE_PROGRESS_PATH
 
-def save_progress(scan_path, scan_subdir, finished_idx, video_list, video_data):
-    # 将 ImageHash 转换为字符串，Image 转换为字符串（base64）
-    import base64
-    from io import BytesIO
 
+def save_progress(scan_path, scan_subdir, finished_idx, video_list, video_data):
+    """保存扫描进度到文件
+    
+    Args:
+        scan_path: 扫描路径
+        scan_subdir: 是否包含子文件夹
+        finished_idx: 已完成索引
+        video_list: 视频列表
+        video_data: 视频数据字典 {path: (hashes, frames, info)}
+    """
     def serialize_video_data(video_data):
+        """序列化视频数据（将ImageHash和PIL Image转换为可JSON序列化的格式）"""
         result = {}
         for k, v in video_data.items():
             hashes, frames, info = v
@@ -37,7 +47,13 @@ def save_progress(scan_path, scan_subdir, finished_idx, video_list, video_data):
     with open(SAVE_PROGRESS_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 def load_progress():
+    """从文件加载扫描进度
+    
+    Returns:
+        dict: 进度数据，如果文件不存在则返回None
+    """
     if not os.path.exists(SAVE_PROGRESS_PATH):
         return None
     with open(SAVE_PROGRESS_PATH, "r", encoding="utf-8") as f:

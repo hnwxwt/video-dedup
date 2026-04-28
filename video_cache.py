@@ -10,6 +10,37 @@ from io import BytesIO
 from collections import OrderedDict
 from typing import Dict, Optional, Tuple, List, Any, Set
 
+"""
+视频缓存系统 - 智能分片存储与增量保存
+
+架构设计:
+- 分片存储: 按项目隔离，每个项目独立目录
+- 增量保存: 只保存变化的分片，减少I/O
+- 懒加载: 按需读取分片，启动秒开
+- 预加载: 后台线程异步预取下一个视频
+
+性能优化:
+- 压缩存储: gzip压缩节省50%空间
+- 内存缓存: 全局单例避免重复加载
+- 智能清理: LRU策略淘汰冷数据
+- 完整性校验: MD5校验和检测损坏
+
+使用方式:
+    from video_cache import get_cached_video, save_video_cache
+    # 或（新代码推荐）
+    from src.utils.video_cache import get_cached_video, save_video_cache
+"""
+import os
+import base64
+import hashlib
+import gzip
+import time
+import gc
+import threading
+from io import BytesIO
+from collections import OrderedDict
+from typing import Dict, Optional, Tuple, List, Any, Set
+
 # ========== 分片缓存配置 ==========
 CACHE_SHARD_SIZE = 500  # 每个分片包含的视频数量（从1000降低到500，减少分片数）
 CACHE_DIR = "video_cache_shards"  # 分片缓存目录
@@ -182,6 +213,17 @@ def set_log_callback(callback):
     global _log_callback
     _log_callback = callback
 
+def set_current_scan_dir(scan_dir):
+    """设置当前扫描目录，用于缓存隔离
+    
+    Args:
+        scan_dir: 扫描根目录路径
+    """
+    global _current_scan_dir
+    if scan_dir:
+        _current_scan_dir = os.path.abspath(scan_dir)
+        _log_message(f"[INFO] 缓存目录已设置为: {_get_cache_dir(False)}")
+
 def _log_message(msg):
     """内部日志函数，优先使用回调，否则使用print"""
     from datetime import datetime
@@ -233,16 +275,67 @@ def _evict_old_shards():
         _log_message(f"[INFO] 智能清理 {removed_count} 个冷分片")
         gc.collect()
 
-def _get_cache_dir(is_high_precision=False):
-    """获取分片缓存目录"""
+def _get_cache_dir(is_high_precision=False, scan_dir=None):
+    """获取分片缓存目录（按扫描目录隔离）
+    
+    Args:
+        is_high_precision: 是否为高精度模式
+        scan_dir: 扫描根目录，如果为None则使用全局默认目录
+    
+    Returns:
+        str: 缓存目录路径
+    """
+    global _current_scan_dir
+    
+    # 如果未指定scan_dir，使用当前扫描目录
+    if scan_dir is None:
+        scan_dir = _current_scan_dir
+    
+    # 基础目录
+    base_dir = CACHE_DIR
+    
+    # 如果有扫描目录，创建子目录（使用目录名的哈希值避免路径过长）
+    if scan_dir:
+        # 规范化路径
+        scan_dir = os.path.abspath(scan_dir)
+        # 使用目录名的MD5哈希作为子目录名（避免特殊字符和路径过长问题）
+        dir_hash = hashlib.md5(scan_dir.encode('utf-8')).hexdigest()[:12]
+        # 同时保留可读的目录名（截断）
+        dir_name = os.path.basename(scan_dir)
+        if len(dir_name) > 20:
+            dir_name = dir_name[:20]
+        subdir_name = f"{dir_name}_{dir_hash}"
+        base_dir = os.path.join(CACHE_DIR, "projects", subdir_name)
+    
+    # 模式子目录
     if is_high_precision:
-        return os.path.join(CACHE_DIR, "high_precision")
+        return os.path.join(base_dir, "high_precision")
     else:
-        return os.path.join(CACHE_DIR, "normal")
+        return os.path.join(base_dir, "normal")
 
 def _get_shard_path(video_path, is_high_precision=False):
-    """根据视频路径计算分片文件路径"""
-    cache_dir = _get_cache_dir(is_high_precision)
+    """根据视频路径计算分片文件路径（自动使用扫描目录隔离）
+    
+    Args:
+        video_path: 视频文件路径
+        is_high_precision: 是否为高精度模式
+    
+    Returns:
+        tuple: (分片文件路径, 分片ID)
+    """
+    global _current_scan_dir
+    
+    # 从视频路径推断扫描根目录
+    scan_dir = _current_scan_dir
+    if not scan_dir and video_path:
+        # 如果未设置全局扫描目录，尝试从视频路径推断
+        abs_video_path = os.path.abspath(video_path)
+        # 向上查找包含多个视频的父目录作为根目录
+        parent_dir = os.path.dirname(abs_video_path)
+        # 简单策略：使用视频所在的第一层父目录
+        scan_dir = parent_dir
+    
+    cache_dir = _get_cache_dir(is_high_precision, scan_dir)
     
     # 使用文件路径的哈希值确定分片
     path_hash = hashlib.md5(os.path.abspath(video_path).encode('utf-8')).hexdigest()
@@ -295,7 +388,20 @@ def _load_shard(shard_path):
                 with open(shard_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
     except Exception as e:
-        _log_message(f"[WARNING] 加载分片失败 {shard_path}: {e}")
+        error_msg = str(e)
+        # ✅ 关键修复：如果是压缩文件损坏，直接删除而非重试
+        if "Compressed file ended before" in error_msg or "EOFError" in error_msg:
+            _log_message(f"[WARNING] 分片文件损坏，自动删除: {shard_path}")
+            try:
+                os.remove(shard_path)
+                # 同时删除校验和文件
+                if os.path.exists(shard_path + '.md5'):
+                    os.remove(shard_path + '.md5')
+                _log_message(f"[INFO] 已删除损坏的分片文件，下次扫描将重新生成")
+            except Exception as del_err:
+                _log_message(f"[ERROR] 删除损坏分片失败: {del_err}")
+        else:
+            _log_message(f"[WARNING] 加载分片失败 {shard_path}: {e}")
     return {}
 
 def _save_shard(shard_path, shard_data):
@@ -547,56 +653,90 @@ def _load_cache_from_disk(is_high_precision=False):
     pass
 
 def save_video_cache_to_disk():
-    """将内存缓存批量写入磁盘（分片模式）"""
+    """将内存缓存批量写入磁盘（分片模式 - 增量保存）"""
     global _cache_dirty, _cache_dirty_hp
     
     # 保存普通模式缓存
     if _cache_dirty and _memory_cache:
         try:
+            # ✅ 关键修复：先复制字典快照，避免迭代时被其他线程修改
+            cache_snapshot = dict(_memory_cache.items())
+            
+            # ✅ 加载现有索引，用于判断哪些分片需要更新
+            index = _load_shard_index(is_high_precision=False)
+            
             # 按分片分组
             shards = {}
-            for video_path, data in _memory_cache.items():
+            for video_path, data in cache_snapshot.items():
                 shard_path, shard_id = _get_shard_path(video_path, is_high_precision=False)
                 if shard_path not in shards:
                     shards[shard_path] = {}
                 shards[shard_path][video_path] = data
             
-            # 保存各个分片
-            index = _load_shard_index(is_high_precision=False)
+            # ✅ 增量保存：只保存有变化的分片
+            saved_count = 0
             for shard_path, shard_data in shards.items():
-                _save_shard(shard_path, shard_data)
                 shard_name = os.path.basename(shard_path)
-                index[shard_name] = len(shard_data)
+                
+                # 检查分片是否有变化（通过对比视频数量）
+                old_count = index.get(shard_name, 0)
+                new_count = len(shard_data)
+                
+                # 如果分片中视频数量增加，说明有新数据需要保存
+                if new_count > old_count:
+                    _save_shard(shard_path, shard_data)
+                    index[shard_name] = new_count
+                    saved_count += 1
             
-            _save_shard_index(index, is_high_precision=False)
+            # 只在有分片被保存时才更新索引文件
+            if saved_count > 0:
+                _save_shard_index(index, is_high_precision=False)
+                _log_message(f"[INFO] 已增量保存普通视频分片缓存: {len(cache_snapshot)} 个视频 ({saved_count} 个分片有更新)")
+            else:
+                _log_message(f"[INFO] 普通视频缓存无新数据，跳过保存")
             
             _cache_dirty = False
-            _log_message(f"[INFO] 已保存普通视频分片缓存: {len(_memory_cache)} 个视频 ({len(shards)} 个分片)")
         except Exception as e:
             _log_message(f"[ERROR] 保存普通缓存失败: {e}")
     
     # 保存高精度模式缓存
     if _cache_dirty_hp and _memory_cache_hp:
         try:
+            # ✅ 关键修复：先复制字典快照，避免迭代时被其他线程修改
+            cache_snapshot = dict(_memory_cache_hp.items())
+            
+            # ✅ 加载现有索引，用于判断哪些分片需要更新
+            index = _load_shard_index(is_high_precision=True)
+            
             # 按分片分组
             shards = {}
-            for video_path, data in _memory_cache_hp.items():
+            for video_path, data in cache_snapshot.items():
                 shard_path, shard_id = _get_shard_path(video_path, is_high_precision=True)
                 if shard_path not in shards:
                     shards[shard_path] = {}
                 shards[shard_path][video_path] = data
             
-            # 保存各个分片
-            index = _load_shard_index(is_high_precision=True)
+            # ✅ 增量保存：只保存有变化的分片
+            saved_count = 0
             for shard_path, shard_data in shards.items():
-                _save_shard(shard_path, shard_data)
                 shard_name = os.path.basename(shard_path)
-                index[shard_name] = len(shard_data)
+                
+                # 检查分片是否有变化
+                old_count = index.get(shard_name, 0)
+                new_count = len(shard_data)
+                
+                if new_count > old_count:
+                    _save_shard(shard_path, shard_data)
+                    index[shard_name] = new_count
+                    saved_count += 1
             
-            _save_shard_index(index, is_high_precision=True)
+            if saved_count > 0:
+                _save_shard_index(index, is_high_precision=True)
+                _log_message(f"[INFO] 已增量保存高精度视频分片缓存: {len(cache_snapshot)} 个视频 ({saved_count} 个分片有更新)")
+            else:
+                _log_message(f"[INFO] 高精度视频缓存无新数据，跳过保存")
             
             _cache_dirty_hp = False
-            _log_message(f"[INFO] 已保存高精度视频分片缓存: {len(_memory_cache_hp)} 个视频 ({len(shards)} 个分片)")
         except Exception as e:
             _log_message(f"[ERROR] 保存高精度缓存失败: {e}")
 
@@ -824,25 +964,6 @@ def get_cached_video(video_path, is_high_precision=False):
         traceback.print_exc()
         return None
 
-def set_current_scan_dir(scan_dir):
-    """设置当前扫描目录
-    
-    Args:
-        scan_dir: 扫描目录路径
-    """
-    global _current_scan_dir, _loaded_shards
-    
-    # 规范化路径
-    if scan_dir:
-        _current_scan_dir = os.path.abspath(scan_dir)
-    else:
-        _current_scan_dir = None
-    
-    # 清空已加载分片记录（切换目录时，强制下次重新加载）
-    _loaded_shards.clear()
-    
-    _log_message(f"[INFO] 设置扫描目录: {_current_scan_dir}")
-
 def _is_video_in_current_dir(video_path):
     """检查视频是否在当前扫描目录下"""
     if not _current_scan_dir:
@@ -1008,6 +1129,12 @@ def warmup_cache_parallel(scan_dir, is_high_precision=False, max_workers=4):
 def get_cache_stats():
     """获取缓存统计信息"""
     return _cache_stats.get_summary()
+
+
+def get_cache_stats_summary():
+    """获取缓存统计摘要（别名函数，用于兼容）"""
+    return _cache_stats.get_summary()
+
 
 def reset_cache_stats():
     """重置缓存统计信息"""
@@ -1221,3 +1348,15 @@ def batch_save_video_cache(video_data_list):
     
     # 统一保存
     save_video_cache_to_disk()
+
+
+
+
+
+
+
+
+
+
+
+

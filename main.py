@@ -1,48 +1,68 @@
-import os
+"""
+视频去重工具 - 主入口（UI控制器）
+
+架构说明:
+- main.py: UI事件处理 + 流程控制（App类，920行）
+- src/core/: 核心业务逻辑（已模块化）
+  - state.py: 扫描状态管理
+  - video_processor.py: 视频处理
+  - comparator.py: 相似度比对
+  - scanner.py: 扫描工作线程
+- src/ui/: UI组件（已模块化）
+  - translations.py: 国际化
+  - main_window.py: 主窗口布局
+  - settings_window.py: 设置窗口
+  - language_manager.py: 语言管理
+- src/utils/: 工具模块
+  - progress.py: 进度管理
+- video_cache.py: 智能缓存系统（1322行，单文件优化版）
+- config.py: 全局配置
+
+设计决策:
+- App类保持单文件：作为MVC中的Controller，与tkinter UI紧密耦合
+- 业务逻辑已分离到src/core/，职责清晰
+- 无需进一步拆分，避免复杂的self引用重构
+"""
 import sys
+import os
+import re
+import base64
+import threading
+from io import BytesIO
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import threading
+
 import send2trash
 from PIL import Image, ImageTk
 import imagehash
-import base64
-from io import BytesIO
-import re
 
-# 抑制 OpenCV/FFmpeg 的警告日志（必须在导入 cv2 之前设置）
+# ========== 抑制 OpenCV/FFmpeg 警告 ==========
 os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 os.environ["OPENCV_VIDEOIO_DEBUG"] = "0"
 
-# 重定向 stderr 以抑制 FFmpeg 警告（可选）
-import io
-class SuppressStderr:
-    def __init__(self):
-        self._stderr = None
-        self._devnull = None
-    
-    def __enter__(self):
-        self._stderr = sys.stderr
-        sys.stderr = open(os.devnull, 'w')
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stderr.close()
-        sys.stderr = self._stderr
+# ========== 导入项目模块 ==========
 
-# 注意：如果不想看到任何FFmpeg警告，可以在导入cv2前启用
-# suppress_stderr = SuppressStderr()
+# 配置层
+from src.config import *
 
-from config import *
-from core import reset_state, find_duplicate_groups, find_duplicate_groups_safe, calc_similar_score, ScanState
-from ui import create_ui, load_language_preference
+# 业务逻辑层
+from src.core import reset_state, find_duplicate_groups, find_duplicate_groups_safe, calc_similar_score, ScanState
+
+# UI层
+from src.ui import create_ui, load_language_preference
+
+# 工作线程
+from src.core.scanner import scan_worker
+
+# 进度管理
+from src.utils.progress import save_progress, load_progress
+
+# 缓存系统
+from video_cache import clear_video_cache, flush_cache, reset_memory_cache, set_current_scan_dir
 
 # 在应用启动前加载语言偏好
 load_language_preference()
-
-from scanner import scan_worker
-from progress import save_progress, load_progress
-from video_cache import clear_video_cache, flush_cache, reset_memory_cache
 
 
 def parse_file_size(size_str):
@@ -160,10 +180,6 @@ class App(tk.Tk):
         # 记录扫描开始时间
         self.scan_start_time = time.time()
         
-        # 设置当前扫描目录（用于按需加载缓存）
-        from video_cache import set_current_scan_dir
-        set_current_scan_dir(path)
-        
         self.btn_start.config(state=tk.DISABLED)
         self.btn_pause.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.NORMAL)
@@ -174,6 +190,10 @@ class App(tk.Tk):
         # 如果不是恢复进度，重置内存缓存以便重新从磁盘加载
         if not resume:
             reset_memory_cache()
+        
+        # ✅ 设置当前扫描目录，用于缓存隔离
+        from video_cache import set_current_scan_dir
+        set_current_scan_dir(path)
         
         self.video_list = self.get_videos(path)
         if not resume:
@@ -218,21 +238,26 @@ class App(tk.Tk):
             if not ScanState.PAUSE:
                 # 暂停扫描
                 ScanState.PAUSE = True
-                self.btn_pause.config(text="▶ 继续", state=tk.DISABLED)
+                # ✅ 不立即禁用按钮，等待on_pause_done回调统一处理
                 self.log("\n[INFO] 正在暂停扫描，等待当前任务完成...")
-                # 保存按钮保持启用，允许用户保存进度
+                
+                # ✅ 暂停时停止预加载线程
+                from video_cache import stop_prefetch_thread
+                stop_prefetch_thread()
             else:
                 # 继续扫描
                 ScanState.PAUSE = False
-                self.btn_pause.config(text=" 暂停")
+                self.btn_pause.config(text="⏸ 暂停", state=tk.NORMAL)
                 self.log("\n[INFO] 继续扫描...")
                 
-                # 只在单线程模式下需要重新启动线程
-                if not self.use_thread.get():
-                    threading.Thread(target=scan_worker, args=(self,), daemon=True).start()
-                else:
-                    # 多线程模式下，线程池会自动继续处理
-                    self.log("[INFO] 多线程扫描已恢复")
+                # ✅ 继续时重新启动预加载线程
+                from video_cache import start_prefetch_thread
+                start_prefetch_thread()
+                
+                # ✅ 无论单线程还是多线程，都需要重新启动扫描线程
+                # 因为暂停时线程池已被shutdown
+                threading.Thread(target=scan_worker, args=(self,), daemon=True).start()
+                self.log("[INFO] 扫描线程已重新启动")
         except Exception as e:
             self.log(f"\n[ERROR] 暂停/继续操作失败: {str(e)}")
             self.btn_pause.config(text="⏸ 暂停", state=tk.NORMAL)
@@ -244,19 +269,53 @@ class App(tk.Tk):
             ScanState.PAUSE = False
             self.btn_pause.config(text="⏸ 暂停", state=tk.NORMAL)
             self.log("\n[INFO] 正在停止扫描...")
-            # 停止时保存缓存到磁盘
-            flush_cache()
-            self.log("\n[SUCCESS] 扫描已停止")
+            
+            # ✅ 立即停止预加载线程
+            from video_cache import stop_prefetch_thread
+            stop_prefetch_thread()
+            
+            # ✅ 在后台线程异步保存缓存，避免阻塞UI
+            threading.Thread(target=self._async_flush_and_reset, daemon=True).start()
         except Exception as e:
             self.log(f"\n[ERROR] 停止操作失败: {str(e)}")
+            self.after(0, self.reset_buttons)
+    
+    def _async_flush_and_reset(self):
+        """异步保存缓存并重置按钮（后台线程）"""
+        try:
+            flush_cache()
+            self.log("\n[SUCCESS] 扫描已停止，缓存已保存")
+        except Exception as e:
+            self.log(f"\n[ERROR] 保存缓存失败: {str(e)}")
+        finally:
+            # ✅ 确保按钮状态在主线程中重置
+            self.log("[DEBUG] 即将调用reset_buttons...")
+            self.after(0, self._safe_reset_buttons)
+    
+    def _safe_reset_buttons(self):
+        """安全重置按钮（带异常捕获）"""
+        try:
+            self.reset_buttons()
+            self.log("[DEBUG] reset_buttons执行完成")
+        except Exception as e:
+            self.log(f"[ERROR] reset_buttons执行失败: {str(e)}")
+            import traceback
+            self.log(traceback.format_exc())
 
     def on_pause_done(self):
         """暂停完成回调"""
         self.log("\n[SUCCESS] 扫描已暂停")
         self.btn_pause.config(text="▶ 继续", state=tk.NORMAL)
-        self.log("[INFO] 缓存已自动保存，可通过设置窗口导出进度备份")
-        # 暂停时保存缓存到磁盘
-        flush_cache()
+        # ✅ 在后台线程异步保存缓存，避免阻塞UI
+        threading.Thread(target=self._async_flush_pause, daemon=True).start()
+    
+    def _async_flush_pause(self):
+        """异步保存暂停状态的缓存（后台线程）"""
+        try:
+            flush_cache()
+            self.log("[INFO] 缓存已自动保存，可通过设置窗口导出进度备份")
+        except Exception as e:
+            self.log(f"[ERROR] 保存缓存失败: {str(e)}")
 
     def on_scan_done(self):
         try:
