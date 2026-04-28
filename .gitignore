@@ -1,0 +1,103 @@
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# PyInstaller打包文件
+*.spec
+release/
+*.zip
+build.bat
+create_release_zip.bat
+push_all.bat
+build_exe.py
+RELEASE_GUIDE.md
+RELEASE_TEMPLATE.md
+PERSONALIZATION_GUIDE.md
+
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+*.egg
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+Icon?
+.Trashes
+
+# 视频扫描缓存文件（大文件）
+video_scan_cache.json
+video_scan_cache_high_precision.json
+*.backup
+*.bak
+
+# 分片缓存目录
+video_cache_shards/
+
+# 扫描进度文件
+scan_progress.json
+
+# 语言配置文件（用户特定）
+language_config.txt
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.temp
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 测试覆盖率
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# 环境变量
+.env
+.venv
+
+# mypy
+.mypy_cache/
+
+# pytype
+.pytype/
+
+# Cython debug symbols
+cython_debug/
