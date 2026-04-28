@@ -16,4 +16,3 @@
 *.mkv binary
 # 缓存分片文件 - 标记为大文件
 video_cache_shards/** filter=lfs diff=lfs merge=lfs -text
-*.exe filter=lfs diff=lfs merge=lfs -text
