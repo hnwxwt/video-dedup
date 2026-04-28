@@ -117,8 +117,8 @@ def scan_worker(app):
                             # 两个模式都返回4个值: (path, hash_list, frame_list, info)
                             app.video_data[data[0]] = (data[1], data[2], data[3])
                             
-                            # 保存到内存缓存（不立即写入磁盘）
-                            save_video_cache(data[0], data[1], data[2], data[3])
+                            # 保存到内存缓存（不立即写入磁盘），显式指定高精度模式
+                            save_video_cache(data[0], data[1], data[2], data[3], is_high_precision=mode_high_precision)
                             
                             app.log(f"({app.finished_idx}/{total}) ✅ {name}")
                         else:
@@ -171,9 +171,8 @@ def scan_worker(app):
                     
                     if data:
                         app.video_data[data[0]] = (data[1], data[2], data[3])
-                        # 保存到内存缓存
-                        save_video_cache(data[0], data[1], data[2], data[3])
-                        app.log(f"({app.finished_idx}/{total}) ✅ {name}")
+                        # 保存到内存缓存，显式指定高精度模式
+                        save_video_cache(data[0], data[1], data[2], data[3], is_high_precision=mode_high_precision)
                     else:
                         app.log(f"({app.finished_idx}/{total}) ❌ {name}")
                 

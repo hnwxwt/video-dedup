@@ -389,9 +389,21 @@ def _load_shard(shard_path):
                     return json.load(f)
     except Exception as e:
         error_msg = str(e)
-        # ✅ 关键修复：如果是压缩文件损坏，直接删除而非重试
+        # ✅ 关键修复：如果是压缩文件损坏或JSON格式错误，直接删除
+        should_delete = False
+        
+        # 检查是否为压缩文件损坏
         if "Compressed file ended before" in error_msg or "EOFError" in error_msg:
-            _log_message(f"[WARNING] 分片文件损坏，自动删除: {shard_path}")
+            should_delete = True
+            reason = "压缩文件损坏"
+        
+        # ✅ 新增：检查是否为JSON解析错误
+        elif "Expecting value" in error_msg or "JSONDecodeError" in error_msg:
+            should_delete = True
+            reason = "JSON格式错误"
+        
+        if should_delete:
+            _log_message(f"[WARNING] 分片文件{reason}，自动删除: {shard_path}")
             try:
                 os.remove(shard_path)
                 # 同时删除校验和文件
@@ -740,14 +752,19 @@ def save_video_cache_to_disk():
         except Exception as e:
             _log_message(f"[ERROR] 保存高精度缓存失败: {e}")
 
-def save_video_cache(video_path, hash_list, frame_list, video_info):
-    """保存单个视频的扫描结果到内存缓存（不立即写入磁盘）"""
+def save_video_cache(video_path, hash_list, frame_list, video_info, is_high_precision=False):
+    """保存单个视频的扫描结果到内存缓存（不立即写入磁盘）
+    
+    Args:
+        video_path: 视频文件路径
+        hash_list: 哈希列表或特征列表
+        frame_list: 帧图像列表
+        video_info: 视频信息字典
+        is_high_precision: 是否为高精度模式（显式指定）
+    """
     global _memory_cache, _memory_cache_hp, _cache_dirty, _cache_dirty_hp
     
     try:
-        # 判断是否为高精度模式（字典类型）
-        is_high_precision = isinstance(hash_list, dict)
-        
         # 根据模式选择对应的缓存
         cache = _get_memory_cache(is_high_precision)
         
@@ -772,17 +789,26 @@ def save_video_cache(video_path, hash_list, frame_list, video_info):
             file_mtime = 0
         
         if is_high_precision:
-            # 高精度模式：序列化字典
-            serialized_features = {}
-            for key, value in hash_list.items():
-                if key == 'frame_list':
-                    # 帧列表单独处理
+            # 高精度模式：hash_list 是特征字典列表
+            serialized_features_list = []
+            for features in hash_list:
+                if features is None:
+                    serialized_features_list.append(None)
                     continue
-                elif isinstance(value, list):
-                    # 哈希列表：转换为字符串
-                    serialized_features[key] = [str(h) if h is not None else None for h in value]
-                else:
-                    serialized_features[key] = value
+                
+                serialized_features = {}
+                for key, value in features.items():
+                    if key == 'frame_list':
+                        # 帧列表单独处理
+                        continue
+                    elif isinstance(value, list):
+                        # 哈希列表：转换为字符串
+                        serialized_features[key] = [str(h) if h is not None else None for h in value]
+                    else:
+                        # 单个ImageHash对象：转换为字符串
+                        serialized_features[key] = str(value) if value is not None else None
+                
+                serialized_features_list.append(serialized_features)
             
             # 序列化帧列表
             frame_b64_list = []
@@ -798,7 +824,7 @@ def save_video_cache(video_path, hash_list, frame_list, video_info):
             cache[cache_key] = {
                 "file_size": file_size,
                 "file_mtime": file_mtime,
-                "features": serialized_features,
+                "features_list": serialized_features_list,  # 改为 features_list
                 "frame_list": frame_b64_list,
                 "video_info": video_info
             }
@@ -898,25 +924,39 @@ def get_cached_video(video_path, is_high_precision=False):
         from PIL import Image
         
         if is_high_precision:
-            # 高精度模式：反序列化字典
-            features = {}
-            serialized_features = cached_data.get("features", {})
+            # 高精度模式：反序列化特征字典列表
+            features_list = []
+            serialized_features_list = cached_data.get("features_list", [])
             
-            for key, value in serialized_features.items():
-                if isinstance(value, list):
-                    # 哈希列表：从字符串恢复
-                    hash_list = []
-                    for h_str in value:
-                        if h_str is not None:
-                            try:
-                                hash_list.append(imagehash.hex_to_hash(h_str))
-                            except:
+            for serialized_features in serialized_features_list:
+                if serialized_features is None:
+                    features_list.append(None)
+                    continue
+                
+                features = {}
+                for key, value in serialized_features.items():
+                    if isinstance(value, list):
+                        # 哈希列表：从字符串恢复
+                        hash_list = []
+                        for h_str in value:
+                            if h_str is not None:
+                                try:
+                                    hash_list.append(imagehash.hex_to_hash(h_str))
+                                except:
+                                    hash_list.append(None)
+                            else:
                                 hash_list.append(None)
+                        features[key] = hash_list
+                    else:
+                        # 单个ImageHash对象：从字符串恢复
+                        if value is not None:
+                            try:
+                                features[key] = imagehash.hex_to_hash(value)
+                            except:
+                                features[key] = None
                         else:
-                            hash_list.append(None)
-                    features[key] = hash_list
-                else:
-                    features[key] = value
+                            features[key] = None
+                features_list.append(features)
             
             # 反序列化帧列表
             frame_list = []
@@ -929,10 +969,9 @@ def get_cached_video(video_path, is_high_precision=False):
                 else:
                     frame_list.append(None)
             
-            features['frame_list'] = frame_list
             video_info = cached_data["video_info"]
             
-            return (features, frame_list, video_info)
+            return (features_list, frame_list, video_info)
         else:
             # 传统模式：列表类型
             hash_list = []
@@ -1348,6 +1387,12 @@ def batch_save_video_cache(video_data_list):
     
     # 统一保存
     save_video_cache_to_disk()
+
+
+
+
+
+
 
 
 

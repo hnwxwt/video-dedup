@@ -10,7 +10,7 @@
   - scanner.py: 扫描工作线程
 - src/ui/: UI组件（已模块化）
   - translations.py: 国际化
-  - main_window.py: 主窗口布局
+  - main_window.py: 主窗口布
   - settings_window.py: 设置窗口
   - language_manager.py: 语言管理
 - src/utils/: 工具模块
